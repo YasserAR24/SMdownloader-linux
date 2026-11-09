@@ -238,7 +238,7 @@ def build_opts(job, on_progress, on_postprocess):
         ydl_opts.update({
             "writesubtitles": True,
             "writeautomaticsub": True,
-            "subtitleslangs": ["en"],
+            "subtitleslangs": ["en.*"],
             "subtitlesformat": "best",
         })
 
@@ -267,7 +267,7 @@ def build_opts(job, on_progress, on_postprocess):
         if job.get("download_subtitles"):
             ydl_opts["writesubtitles"] = True
             ydl_opts["writeautomaticsub"] = True
-            ydl_opts["subtitleslangs"] = ["en", "en-US"]
+            ydl_opts["subtitleslangs"] = ["en.*"]
             ydl_opts["subtitlesformat"] = "srt/best"
             ydl_opts["postprocessors"].append({"key": "FFmpegEmbedSubtitle"})
 
@@ -383,6 +383,17 @@ def final_path(info):
         if path:
             return path
     return info.get("filepath")
+
+
+def has_english_subtitles(info):
+    tracks = (info.get("subtitles") or {}, info.get("automatic_captions") or {})
+    return any(
+        language.lower().replace("_", "-") == "en"
+        or language.lower().replace("_", "-").startswith("en-")
+        for collection in tracks
+        for language in collection
+        if isinstance(language, str)
+    )
 
 
 def remove_partials(paths):
@@ -530,6 +541,14 @@ class SizePlannerPP(PostProcessor):
         self.tracker = tracker
 
     def run(self, info):
+        if (
+            self.tracker.job.get("download_subtitles")
+            and self.tracker.job["mode"] == "video"
+            and not has_english_subtitles(info)
+        ):
+            raise yt_dlp.utils.DownloadError(
+                "This video does not have English subtitles."
+            )
         self.tracker.plan(info)
         return [], info
 
