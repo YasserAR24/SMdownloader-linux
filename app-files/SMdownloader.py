@@ -1,13 +1,13 @@
 """
 SMdownloader - video + audio downloader with a web page (Flask + yt-dlp).
 
-Run:    python SMdownloader-linux.py
+Run:    python SMdownloader.py
 Open:   http://127.0.0.1:5000
 
 Needs:  pip install flask yt-dlp     (+ FFmpeg on PATH for MP4 merging / MP3 conversion)
 
 Files (keep this layout):
-    SMdownloader-linux.py    this file: the server and the download logic
+    SMdownloader.py          this file: the server and the download logic
     templates/index.html     the page
     static/base.css          shared theme (all colors live here)
     static/style.css         page layout
@@ -1081,7 +1081,7 @@ if __name__ == "__main__":
     missing = [f for f in REQUIRED_FILES if not os.path.isfile(os.path.join(BASE_DIR, f))]
     if missing:
         sys.exit(
-            "Missing files next to SMdownloader-linux.py:\n  " + "\n  ".join(missing)
+            "Missing files next to SMdownloader.py:\n  " + "\n  ".join(missing)
             + "\nKeep the templates/ and static/ folders beside this file."
         )
 

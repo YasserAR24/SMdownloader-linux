@@ -1,4 +1,4 @@
-/* app.js - behavior of the SMdownloader page. Talks to the Flask API in SMdownloader-linux.py. */
+/* app.js - behavior of the SMdownloader page. Talks to the Flask API in SMdownloader.py. */
 (function () {
     'use strict';
 
