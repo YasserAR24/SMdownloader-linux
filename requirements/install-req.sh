@@ -10,7 +10,7 @@ python3 --version
 
 # Check if the virtual environment exists
 cd ..
-if [ -d ".downloadervenv" ]; then
+if [ -d ".SMdownloadervenv" ]; then
     echo "venv exists."
 else
     echo "Creating the venv..."
