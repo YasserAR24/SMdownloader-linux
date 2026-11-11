@@ -312,6 +312,16 @@
             var actions = document.createElement('div');
             actions.className = 'job-actions';
 
+            if (job.status === 'inspecting' || job.status === 'queued' ||
+                job.status === 'error' || job.status === 'done') {
+                var editName = document.createElement('button');
+                editName.type = 'button';
+                editName.className = 'action secondary small';
+                editName.textContent = 'Edit name';
+                editName.addEventListener('click', function () { editJobName(job); });
+                actions.appendChild(editName);
+            }
+
             if (job.status === 'error') {
                 var retry = document.createElement('button');
                 retry.type = 'button';
@@ -378,6 +388,21 @@
             setMsg(err.message);
         }
         refresh();
+    }
+
+    async function editJobName(job) {
+        var name = window.prompt('Edit video name', job.custom_title || job.title || '');
+        if (name === null) { return; }
+        try {
+            await api('/api/jobs/' + encodeURIComponent(job.id) + '/name', {
+                method: 'POST',
+                body: JSON.stringify({ name: name })
+            });
+            setMsg('');
+            refresh();
+        } catch (err) {
+            setMsg(err.message);
+        }
     }
 
     async function retryJob(id) {

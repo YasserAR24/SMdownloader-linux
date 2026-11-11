@@ -110,6 +110,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 #         any step can end as error; the user can end it as cancelled/removed.
 # ----------------------------------------------------------------------------
 jobs = {}  # id -> job dict, kept in creation order
+reserved_output_paths = set()
 lock = threading.Lock()
 scheduler_condition = threading.Condition(lock)
 work_queue = queue.Queue()
@@ -181,6 +182,7 @@ def make_job(url, quality, status, title=None, download_subtitles=False, custom_
         "eta": None,
         "error": None,
         "file": None,
+        "reserved_output_paths": set(),
         "cancel": False,
         "resume_event": threading.Event(),
         "resume_requested": False,
@@ -397,6 +399,24 @@ def has_english_subtitles(info):
     )
 
 
+def reserve_output_path(job, info):
+    filename = info.get("_filename")
+    if not isinstance(filename, str):
+        return
+
+    extension = ".mp3" if job["mode"] == "audio" else ".mp4"
+    output_path = os.path.realpath(os.path.splitext(filename)[0] + extension)
+    with lock:
+        if output_path in job["reserved_output_paths"]:
+            return
+        if os.path.lexists(output_path) or output_path in reserved_output_paths:
+            raise yt_dlp.utils.DownloadError(
+                f'A file named "{os.path.basename(output_path)}" already exists in the download folder.'
+            )
+        reserved_output_paths.add(output_path)
+        job["reserved_output_paths"].add(output_path)
+
+
 def remove_partials(paths):
     """Delete leftovers of an aborted download (.part, .ytdl, fragment files)."""
     for path in paths:
@@ -550,6 +570,7 @@ class SizePlannerPP(PostProcessor):
             raise yt_dlp.utils.DownloadError(
                 "This video does not have English subtitles."
             )
+        reserve_output_path(self.tracker.job, info)
         self.tracker.plan(info)
         return [], info
 
@@ -625,6 +646,10 @@ def run_job(job):
             job["error"] = f"Unexpected error: {clean_error(e, 400)}"
     finally:
         tracker.stop_range_monitor()
+        with lock:
+            for reserved_path in job["reserved_output_paths"]:
+                reserved_output_paths.discard(reserved_path)
+            job["reserved_output_paths"].clear()
 
 
 def run_scheduled_job(job):
@@ -979,6 +1004,57 @@ def toggle_pause_job(job_id):
             return error("This job cannot be paused right now.", 409)
         scheduler_condition.notify_all()
         return jsonify({"status": job["status"]})
+
+
+@app.post("/api/jobs/<job_id>/name")
+def edit_job_name(job_id):
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get("name"), str):
+        return error("The video name must be text.", 400)
+
+    name = data["name"].strip()
+    if len(name) > MAX_CUSTOM_TITLE_LENGTH:
+        return error(f"The video name must be {MAX_CUSTOM_TITLE_LENGTH} characters or fewer.", 400)
+    custom_title = safe_custom_title(name)
+
+    with lock:
+        job = jobs.get(job_id)
+        if job is None:
+            return error("No such job.", 404)
+        if job["status"] not in ("inspecting", "queued", "error", "done"):
+            return error("The name can't be changed while this job is downloading or converting.", 409)
+
+        if job["status"] == "done":
+            source = job["file"]
+            if not source or not os.path.isfile(source):
+                return error("The downloaded file is no longer available.", 409)
+
+            title = custom_title or safe_custom_title(job.get("title"))
+            if not title:
+                return error("A video name is required.", 400)
+
+            source = os.path.realpath(source)
+            extension = os.path.splitext(source)[1]
+            destination = os.path.join(os.path.dirname(source), title + extension)
+            if destination != source:
+                if os.path.lexists(destination) or destination in reserved_output_paths:
+                    return error(
+                        f'A file named "{os.path.basename(destination)}" already exists in the download folder.',
+                        409,
+                    )
+                try:
+                    os.link(source, destination)
+                    try:
+                        os.unlink(source)
+                    except OSError:
+                        os.unlink(destination)
+                        raise
+                except OSError as exc:
+                    return error(f"Could not rename the downloaded file: {clean_error(exc)}", 500)
+                job["file"] = destination
+
+        job["custom_title"] = custom_title
+        return jsonify(public(job))
 
 
 @app.post("/api/jobs/<job_id>/retry")
