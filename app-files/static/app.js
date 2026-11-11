@@ -30,19 +30,6 @@
         if (isAudio) { checkbox.checked = false; }
     }
 
-    function updateTimeRangeAvailability() {
-        var isAudio = el('quality').value === 'audio';
-        var fields = el('time-range-fields');
-        el('select-time').hidden = isAudio;
-        if (isAudio) {
-            fields.hidden = true;
-            el('timeline-controls').hidden = true;
-            videoInfoUrl = '';
-            videoDuration = 0;
-            el('select-time').setAttribute('aria-expanded', 'false');
-        }
-    }
-
     function clearVideoInfo() {
         videoInfoUrl = '';
         videoDuration = 0;
@@ -286,7 +273,12 @@
             // Titles, URLs and errors come from remote sites: always textContent, never innerHTML.
             var title = document.createElement('div');
             title.className = 'job-title';
-            title.textContent = job.custom_title || job.title || job.url;
+            var videoLink = document.createElement('a');
+            videoLink.href = job.url;
+            videoLink.target = '_blank';
+            videoLink.rel = 'noopener noreferrer';
+            videoLink.textContent = job.custom_title || job.title || job.url;
+            title.appendChild(videoLink);
             li.appendChild(title);
 
             var meta = document.createElement('div');
@@ -633,10 +625,8 @@
     el('quality').addEventListener('change', function () {
         updateNote();
         updateSubtitleToggle();
-        updateTimeRangeAvailability();
     });
     updateSubtitleToggle();
-    updateTimeRangeAvailability();
 
     el('select-time').addEventListener('click', async function () {
         var fields = el('time-range-fields');

@@ -159,6 +159,19 @@ input[type="checkbox"] { width: 18px; height: 18px; flex: none; accent-color: va
 }
 .job.is-error { border-left-color: var(--color-danger); }
 .job-title { font-weight: 600; overflow-wrap: anywhere; }
+.job-title a:link,
+.job-title a:visited {
+    color: var(--color-text);
+    text-decoration-color: var(--color-glow);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+    transition: color 0.15s ease, text-decoration-color 0.15s ease;
+}
+.job-title a:hover,
+.job-title a:focus-visible {
+    color: var(--color-text);
+    text-decoration-color: var(--color-text);
+}
 .job-meta { font-size: 14px; color: var(--color-text-muted); font-variant-numeric: tabular-nums; }
 .job-error { font-size: 14px; overflow-wrap: anywhere; }
 .track { height: 6px; border-radius: 3px; background-color: var(--color-field-bg); overflow: hidden; }

@@ -232,7 +232,8 @@ def build_opts(job, on_progress, on_postprocess):
 
     if job.get("download_range"):
         ydl_opts["download_ranges"] = yt_dlp.utils.download_range_func(None, [job["download_range"]])
-        ydl_opts["force_keyframes_at_cuts"] = True
+        if job["mode"] == "video":
+            ydl_opts["force_keyframes_at_cuts"] = True
 
     if job.get("download_subtitles"):
         ydl_opts.update({
@@ -865,8 +866,6 @@ def create_job():
             return error("Use M:SS or H:MM:SS for start and end times.", 400)
         if end_seconds <= start_seconds:
             return error("End time must be after start time.", 400)
-        if quality == "audio":
-            return error("Time selection is available for video downloads only.", 400)
         download_range = (start_seconds, end_seconds)
 
     with lock:
