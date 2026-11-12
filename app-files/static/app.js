@@ -366,11 +366,12 @@
                 open.textContent = 'Open';
                 actions.appendChild(open);
 
-                var save = document.createElement('a');
-                save.className = 'action secondary small';
-                save.href = '/api/jobs/' + encodeURIComponent(job.id) + '/file';
-                save.textContent = 'Copy to';
-                actions.appendChild(save);
+                var move = document.createElement('button');
+                move.type = 'button';
+                move.className = 'action secondary small';
+                move.textContent = 'Move to';
+                move.addEventListener('click', function () { moveJobFile(job.id); });
+                actions.appendChild(move);
             }
 
             if (job.status !== 'processing') {
@@ -408,6 +409,21 @@
             });
             setMsg('');
             refresh();
+        } catch (err) {
+            setMsg(err.message);
+        }
+    }
+
+    async function moveJobFile(id) {
+        try {
+            var result = await api('/api/jobs/' + encodeURIComponent(id) + '/move', {
+                method: 'POST',
+                body: '{}'
+            });
+            if (!result.cancelled) {
+                setMsg('Moved "' + result.file_name + '" to the selected folder.');
+                refresh();
+            }
         } catch (err) {
             setMsg(err.message);
         }

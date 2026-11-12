@@ -213,6 +213,10 @@ def platform_check(url):
     return None
 
 
+def should_download_english_subtitles(job):
+    return job.get("download_subtitles") and job.get("platform") == "YouTube"
+
+
 def build_opts(job, on_progress, on_postprocess):
     out_dir = job["output_dir"]
     os.makedirs(out_dir, exist_ok=True)
@@ -237,7 +241,7 @@ def build_opts(job, on_progress, on_postprocess):
         if job["mode"] == "video":
             ydl_opts["force_keyframes_at_cuts"] = True
 
-    if job.get("download_subtitles"):
+    if should_download_english_subtitles(job):
         ydl_opts.update({
             "writesubtitles": True,
             "writeautomaticsub": True,
@@ -267,7 +271,7 @@ def build_opts(job, on_progress, on_postprocess):
             # works on any site; falls back to "best" when it has no such stream/height
             ydl_opts["format"] = f"bestvideo[height<={q}]+bestaudio/best[height<={q}]/best"
 
-        if job.get("download_subtitles"):
+        if should_download_english_subtitles(job):
             ydl_opts["writesubtitles"] = True
             ydl_opts["writeautomaticsub"] = True
             ydl_opts["subtitleslangs"] = ["en.*"]
@@ -591,7 +595,7 @@ class SizePlannerPP(PostProcessor):
 
     def run(self, info):
         if (
-            self.tracker.job.get("download_subtitles")
+            should_download_english_subtitles(self.tracker.job)
             and self.tracker.job["mode"] == "video"
             and not has_english_subtitles(info)
         ):
@@ -878,6 +882,74 @@ def browse_settings():
     if result.returncode not in (0, 1):
         return error(clean_error(result.stderr) or "The folder picker could not be opened.", 500)
     return jsonify({"output_root": result.stdout.strip() if result.returncode == 0 else ""})
+
+
+@app.post("/api/jobs/<job_id>/move")
+def move_job_file(job_id):
+    with lock:
+        job = jobs.get(job_id)
+        if job is None:
+            return error("No such job.", 404)
+        if job["status"] != "done" or not job["file"]:
+            return error("Only completed downloads can be moved.", 409)
+        source = os.path.realpath(job["file"])
+
+    if not os.path.isfile(source):
+        return error("The downloaded file is no longer available.", 404)
+
+    initial_dir = os.path.dirname(source)
+    zenity = shutil.which("zenity")
+    kdialog = shutil.which("kdialog")
+    if zenity:
+        command = [
+            zenity,
+            "--file-selection",
+            "--directory",
+            "--title=Move video to folder",
+            f"--filename={initial_dir.rstrip(os.sep)}{os.sep}",
+        ]
+    elif kdialog:
+        command = [
+            kdialog,
+            "--getexistingdirectory",
+            initial_dir,
+            "--title",
+            "Move video to folder",
+        ]
+    else:
+        return error("No system folder picker is available.", 503)
+
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+    except OSError as exc:
+        return error(f"Could not open the folder picker: {clean_error(exc)}", 500)
+    if result.returncode in (1,):
+        return jsonify({"cancelled": True})
+    if result.returncode != 0:
+        return error(clean_error(result.stderr) or "The folder picker could not be opened.", 500)
+
+    destination_dir = os.path.realpath(os.path.expanduser(result.stdout.strip()))
+    if not os.path.isdir(destination_dir) or not os.access(destination_dir, os.W_OK):
+        return error("The selected folder is not writable.", 400)
+    destination = os.path.join(destination_dir, os.path.basename(source))
+
+    with lock:
+        job = jobs.get(job_id)
+        if job is None or job["status"] != "done" or job["file"] != source:
+            return error("The downloaded file changed while choosing a folder.", 409)
+        if os.path.lexists(destination):
+            return error(
+                f'A file named "{os.path.basename(destination)}" already exists in the selected folder.',
+                409,
+            )
+        try:
+            moved_path = shutil.move(source, destination)
+        except OSError as exc:
+            return error(f"Could not move the downloaded file: {clean_error(exc)}", 500)
+        job["file"] = os.path.realpath(moved_path)
+        job["output_root"] = destination_dir
+        job["output_dir"] = destination_dir
+        return jsonify({"file_name": os.path.basename(moved_path)})
 
 
 @app.post("/api/jobs")
