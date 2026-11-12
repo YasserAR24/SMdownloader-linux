@@ -417,6 +417,34 @@ def reserve_output_path(job, info):
         job["reserved_output_paths"].add(output_path)
 
 
+def rename_output_file(job, source, title):
+    source = os.path.realpath(source)
+    destination = os.path.join(
+        os.path.dirname(source),
+        title + os.path.splitext(source)[1],
+    )
+    if destination == source:
+        return source
+    if (
+        os.path.lexists(destination)
+        or (
+            destination in reserved_output_paths
+            and destination not in job["reserved_output_paths"]
+        )
+    ):
+        raise yt_dlp.utils.DownloadError(
+            f'A file named "{os.path.basename(destination)}" already exists in the download folder.'
+        )
+
+    os.link(source, destination)
+    try:
+        os.unlink(source)
+    except OSError:
+        os.unlink(destination)
+        raise
+    return destination
+
+
 def remove_partials(paths):
     """Delete leftovers of an aborted download (.part, .ytdl, fragment files)."""
     for path in paths:
@@ -624,6 +652,9 @@ def run_job(job):
         with lock:
             job["file"] = path
             job["title"] = job["title"] or (info or {}).get("title")
+            if path and job.get("custom_title"):
+                path = rename_output_file(job, path, job["custom_title"])
+                job["file"] = path
             if final_size:  # the real size on disk (after merging / MP3 conversion)
                 job["size_done"] = job["size_total"] = final_size
             job["percent"] = 100.0
@@ -1021,8 +1052,8 @@ def edit_job_name(job_id):
         job = jobs.get(job_id)
         if job is None:
             return error("No such job.", 404)
-        if job["status"] not in ("inspecting", "queued", "error", "done"):
-            return error("The name can't be changed while this job is downloading or converting.", 409)
+        if job["status"] not in ("inspecting", "queued", "downloading", "paused", "error", "done"):
+            return error("The name can't be changed while this job is converting.", 409)
 
         if job["status"] == "done":
             source = job["file"]
@@ -1033,25 +1064,30 @@ def edit_job_name(job_id):
             if not title:
                 return error("A video name is required.", 400)
 
-            source = os.path.realpath(source)
-            extension = os.path.splitext(source)[1]
-            destination = os.path.join(os.path.dirname(source), title + extension)
-            if destination != source:
-                if os.path.lexists(destination) or destination in reserved_output_paths:
-                    return error(
-                        f'A file named "{os.path.basename(destination)}" already exists in the download folder.',
-                        409,
-                    )
-                try:
-                    os.link(source, destination)
-                    try:
-                        os.unlink(source)
-                    except OSError:
-                        os.unlink(destination)
-                        raise
-                except OSError as exc:
-                    return error(f"Could not rename the downloaded file: {clean_error(exc)}", 500)
-                job["file"] = destination
+            try:
+                job["file"] = rename_output_file(job, source, title)
+            except yt_dlp.utils.DownloadError as exc:
+                return error(clean_error(exc), 409)
+            except OSError as exc:
+                return error(f"Could not rename the downloaded file: {clean_error(exc)}", 500)
+        elif job["status"] in ("downloading", "paused") and custom_title:
+            extension = ".mp3" if job["mode"] == "audio" else ".mp4"
+            destination = os.path.realpath(
+                os.path.join(job["output_dir"], custom_title + extension)
+            )
+            if (
+                destination not in job["reserved_output_paths"]
+                and (
+                    os.path.lexists(destination)
+                    or destination in reserved_output_paths
+                )
+            ):
+                return error(
+                    f'A file named "{os.path.basename(destination)}" already exists in the download folder.',
+                    409,
+                )
+            reserved_output_paths.add(destination)
+            job["reserved_output_paths"].add(destination)
 
         job["custom_title"] = custom_title
         return jsonify(public(job))

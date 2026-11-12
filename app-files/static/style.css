@@ -173,6 +173,9 @@ input[type="checkbox"] { width: 18px; height: 18px; flex: none; accent-color: va
     text-decoration-color: var(--color-text);
 }
 .job-meta { font-size: 14px; color: var(--color-text-muted); font-variant-numeric: tabular-nums; }
+.job-status-done { color: rgb(0 255 9 / 50%); }
+.job-status-cancelled { color: rgb(230 255 0 / 50%); }
+.job-status-error { color: var(--color-danger); }
 .job-error { font-size: 14px; overflow-wrap: anywhere; }
 .track { height: 6px; border-radius: 3px; background-color: var(--color-field-bg); overflow: hidden; }
 .fill { height: 100%; background-color: var(--color-glow); }

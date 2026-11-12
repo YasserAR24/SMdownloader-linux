@@ -251,7 +251,7 @@
                 if (job.resume_requested) { return 'Waiting for a download slot'; }
                 return 'Paused' + (job.size_done ? ' · ' + fmtBytes(job.size_done) + ' downloaded' : '');
             case 'processing': return 'Converting...';
-            case 'done': return job.size_total ? 'Finished · ' + fmtBytes(job.size_total) : 'Finished';
+            case 'done': return 'Finished';
             case 'cancelled': return 'Cancelled';
             case 'error': return 'Failed';
             default: return job.status;
@@ -283,7 +283,14 @@
 
             var meta = document.createElement('div');
             meta.className = 'job-meta';
-            meta.textContent = describe(job) + ' · ' + statusLine(job);
+            meta.appendChild(document.createTextNode(describe(job) + ' · '));
+            var status = document.createElement('span');
+            status.className = 'job-status job-status-' + job.status;
+            status.textContent = statusLine(job);
+            meta.appendChild(status);
+            if (job.status === 'done' && job.size_total) {
+                meta.appendChild(document.createTextNode(' · ' + fmtBytes(job.size_total)));
+            }
             li.appendChild(meta);
 
             var showBar = job.status === 'processing' || job.status === 'done' ||
@@ -313,6 +320,7 @@
             actions.className = 'job-actions';
 
             if (job.status === 'inspecting' || job.status === 'queued' ||
+                job.status === 'downloading' || job.status === 'paused' ||
                 job.status === 'error' || job.status === 'done') {
                 var editName = document.createElement('button');
                 editName.type = 'button';
