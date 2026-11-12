@@ -209,6 +209,8 @@ def platform_check(url):
         return "Facebook"
     if host == "tiktok.com" or host.endswith(".tiktok.com"):
         return "TikTok"
+    if host == "linkedin.com" or host.endswith(".linkedin.com"):
+        return "LinkedIn"
 
     return None
 

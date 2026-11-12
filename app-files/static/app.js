@@ -216,15 +216,25 @@
     }
 
     function describe(job) {
-        if (job.mode === 'video' && job.platform === 'Instagram') { return 'Instagram reel'; }
-        if (job.mode === 'video' && job.platform === 'TikTok') { return 'TikTok reel'; }
-
         var parts = [];
+        var showQualityAndSubtitles = job.platform === 'YouTube' || job.platform === 'Facebook';
         if (job.quality === 'audio') { parts.push('MP3'); }
-        else if (job.quality === 'high') { parts.push('MP4 · best quality'); }
-        else { parts.push('MP4 · up to ' + job.quality + 'p'); }
-        if (job.platform) { parts.push(job.platform); }
-        if (job.download_subtitles) { parts.push('English subtitles'); }
+        else if (showQualityAndSubtitles && job.quality === 'high') { parts.push('MP4 · best quality'); }
+        else if (showQualityAndSubtitles) { parts.push('MP4 · up to ' + job.quality + 'p'); }
+        else { parts.push('MP4'); }
+        var platform = job.platform;
+        if (!platform) {
+            try {
+                platform = new URL(job.url).hostname;
+                if (platform === 'lnkd.in' || platform.endsWith('.lnkd.in')) {
+                    platform = 'LinkedIn';
+                }
+            } catch (err) {
+                platform = 'Other';
+            }
+        }
+        parts.push(platform);
+        if (showQualityAndSubtitles && job.download_subtitles) { parts.push('English subtitles'); }
         return parts.join(' · ');
     }
 
