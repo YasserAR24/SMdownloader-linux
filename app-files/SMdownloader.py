@@ -48,7 +48,10 @@ QUALITIES = ["2160", "1440", "1080", "720", "480", "360"]
 # "high" = best video + audio the site offers, "audio" = MP3 only
 QUALITY_OPTIONS = (
     [("high", "High (best available)")]
-    + [(q, f"{q}p") for q in QUALITIES]
+    + [
+        (q, f"{q}p (4K)" if q == "2160" else f"{q}p (2K)" if q == "1440" else f"{q}p")
+        for q in QUALITIES
+    ]
     + [("audio", "Audio (MP3)")]
 )
 QUALITY_CHOICES = [value for value, _ in QUALITY_OPTIONS]

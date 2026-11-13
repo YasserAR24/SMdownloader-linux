@@ -743,6 +743,18 @@
         }
     });
 
+    var maxConcurrentInput = el('max-concurrent-downloads');
+    el('increase-downloads').addEventListener('click', function () {
+        maxConcurrentInput.stepUp();
+    });
+    el('decrease-downloads').addEventListener('click', function () {
+        if (maxConcurrentInput.value === '') {
+            maxConcurrentInput.value = maxConcurrentInput.min || '1';
+        } else {
+            maxConcurrentInput.stepDown();
+        }
+    });
+
     function closeOptions() { optionsDialog.close(); }
     el('close-options').addEventListener('click', closeOptions);
     el('cancel-options').addEventListener('click', closeOptions);
