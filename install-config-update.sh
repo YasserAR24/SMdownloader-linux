@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "Welcome."
+echo "Welcome to SMdownloader."
 echo
 
 sudo apt update
@@ -9,7 +9,7 @@ sudo apt install -y python3 python3-venv
 python3 --version
 
 # Check if the virtual environment exists
-cd ..
+
 if [ -d ".SMdownloadervenv" ]; then
     echo "venv exists."
 else
@@ -27,7 +27,8 @@ fi
 
 echo
 
-# Activate the virtual environment
+# Activate the virtual environment and install requirements
+
 source .SMdownloadervenv/bin/activate
 
 echo "Installing packages..."
@@ -42,5 +43,5 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "----Done----"
-echo "Press Enter to exit"
+echo "Press Enter to exit..."
 read
