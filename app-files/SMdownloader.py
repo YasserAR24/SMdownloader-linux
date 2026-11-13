@@ -224,7 +224,12 @@ def platform_check(url):
         return "Facebook"
     if host == "tiktok.com" or host.endswith(".tiktok.com"):
         return "TikTok"
-    if host == "linkedin.com" or host.endswith(".linkedin.com"):
+    if (
+        host == "linkedin.com"
+        or host.endswith(".linkedin.com")
+        or host == "lnkd.in"
+        or host.endswith(".lnkd.in")
+    ):
         return "LinkedIn"
 
     return None
@@ -282,10 +287,9 @@ def build_opts(job, on_progress, on_postprocess):
         ydl_opts["merge_output_format"] = "mp4"
         ydl_opts["postprocessors"] = [{"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}]
         q = job["quality"]
-        if q == "high":
+        if job["platform"] != "YouTube" or q == "high":
             ydl_opts["format"] = "bv*+ba/b"
         else:
-            # works on any site; falls back to "best" when it has no such stream/height
             ydl_opts["format"] = f"bestvideo[height<={q}]+bestaudio/best[height<={q}]/best"
 
         if should_download_english_subtitles(job):
