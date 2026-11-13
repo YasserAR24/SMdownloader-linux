@@ -2,7 +2,6 @@
 
 Social Media downloader
 
----
 ## Make this for first time (one time)
 
 - First, make `install-config-update.sh` and `runSMdownloader.sh` executable by typing this command in a terminal (note: you must open the current folder in the terminal):  
@@ -16,7 +15,6 @@ Social Media downloader
 - Right-click `runSMdownloader.sh` and choose **Run as a Program**.
 - A window will open in your default browser. This window contains the app’s GUI.
 
----
 ## Features
 
 - Download a single video or pick videos from a playlist (first 200 items are listed)
@@ -32,12 +30,10 @@ Social Media downloader
 - Configurable download folder and maximum simultaneous downloads (default 3)
 - Downloads are sorted into subfolders by platform: YouTube, Instagram, Facebook, TikTok, LinkedIn. Other sites supported by yt-dlp are saved in the root download folder.
 
----
 ## Note
 
 You can update the program by running the `install-config-update.sh` file again.
 
----
 ## Technical stuf
 
  - **HTML, CSS, and JavaScript:** front end.
