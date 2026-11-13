@@ -127,6 +127,9 @@ input[type="checkbox"] { width: 18px; height: 18px; flex: none; accent-color: va
 .picker-head h2 { font-size: 18px; font-weight: 600; }
 .picker-count { font-size: 14px; color: var(--color-text-muted); }
 .picker-title { margin: 4px 0 12px; color: var(--color-text-muted); overflow-wrap: anywhere; }
+.playlist-folder { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 14px; color: var(--color-text-muted); }
+.playlist-folder strong { color: var(--color-text); overflow-wrap: anywhere; }
+.playlist-folder .action.small { margin-left: auto; }
 .picker-tools { display: flex; gap: 8px; margin-bottom: 10px; }
 .picker-list {
     list-style: none;

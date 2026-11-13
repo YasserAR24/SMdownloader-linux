@@ -160,11 +160,23 @@ def parse_time_input(value):
     return hours * 3600 + minutes * 60 + seconds
 
 
-def make_job(url, quality, status, title=None, download_subtitles=False, custom_title=None, download_range=None):
+def make_job(
+    url,
+    quality,
+    status,
+    title=None,
+    download_subtitles=False,
+    custom_title=None,
+    download_range=None,
+    output_subfolder=None,
+):
     """Create and register a job. The caller must hold `lock`."""
     mode = "audio" if quality == "audio" else "video"
     platform = platform_check(url)
     output_dir = os.path.join(OUTPUT_ROOT, platform.lower()) if platform else OUTPUT_ROOT
+    safe_subfolder = safe_custom_title(output_subfolder)
+    if safe_subfolder:
+        output_dir = os.path.join(output_dir, safe_subfolder)
     job = {
         "id": uuid.uuid4().hex[:12],
         "url": url,
@@ -357,6 +369,8 @@ def inspect_url(job_id):
             job["truncated"] = truncated
             job["playlist_title"] = str(info.get("title") or "")[:300] or None
             job["title"] = job["playlist_title"]
+            job["custom_title"] = None
+            job["download_range"] = None
             job["status"] = "choosing"  # waits for the user's selection
             return
         if is_playlist and not entries:
@@ -1038,6 +1052,12 @@ def select_entries(job_id):
     indexes = data.get("indexes") if isinstance(data, dict) else None
     if not isinstance(indexes, list) or not indexes:
         return error("Select at least one video.", 400)
+    folder_name = data.get("folder_name") if isinstance(data, dict) else None
+    if not isinstance(folder_name, str):
+        return error("The playlist folder name must be text.", 400)
+    folder_name = safe_custom_title(folder_name)
+    if not folder_name:
+        return error("Enter a valid playlist folder name.", 400)
 
     with lock:
         job = jobs.get(job_id)
@@ -1062,8 +1082,7 @@ def select_entries(job_id):
                 "queued",
                 job["entries"][i - 1]["title"],
                 download_subtitles=job.get("download_subtitles", False),
-                custom_title=job.get("custom_title"),
-                download_range=job.get("download_range"),
+                output_subfolder=folder_name,
             )
             for i in sorted(chosen)
         ]

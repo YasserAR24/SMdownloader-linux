@@ -8,6 +8,7 @@
     var pickers = {};   // job id -> picker element, or 'loading' while its list is being fetched
     var videoInfoUrl = '';
     var videoDuration = 0;
+    var playlistOptionsUnavailable = false;
 
     function setMsg(text) {
         var m = el('msg');
@@ -35,6 +36,19 @@
         videoDuration = 0;
         el('timeline-controls').hidden = true;
         el('time-range-status').textContent = 'Select a video to load its duration.';
+    }
+
+    function setPlaylistOptionsUnavailable(unavailable) {
+        playlistOptionsUnavailable = unavailable;
+        el('custom-title').disabled = unavailable;
+        el('select-time').disabled = unavailable;
+        el('playlist-options-note').hidden = !unavailable;
+        if (unavailable) {
+            el('time-range-fields').hidden = true;
+            el('timeline-controls').hidden = true;
+            el('select-time').setAttribute('aria-expanded', 'false');
+            clearVideoInfo();
+        }
     }
 
     el('url').addEventListener('input', clearVideoInfo);
@@ -148,7 +162,7 @@
             videoDuration = 0;
             status.textContent = err.message;
         } finally {
-            el('select-time').disabled = false;
+            el('select-time').disabled = playlistOptionsUnavailable;
         }
     }
 
@@ -476,6 +490,7 @@
     function syncPickers(jobs) {
         var waiting = {};
         jobs.forEach(function (j) { if (j.status === 'choosing') { waiting[j.id] = true; } });
+        setPlaylistOptionsUnavailable(Object.keys(waiting).length > 0);
         Object.keys(pickers).forEach(function (id) { if (!waiting[id]) { removePicker(id); } });
         Object.keys(waiting).forEach(function (id) { if (!pickers[id]) { buildPicker(id); } });
     }
@@ -518,6 +533,25 @@
         name.className = 'picker-title';
         name.textContent = data.title || 'Playlist';
         box.appendChild(name);
+
+        var folderName = data.title || 'Playlist';
+        var folderRow = document.createElement('div');
+        folderRow.className = 'playlist-folder';
+        var folderLabel = document.createElement('span');
+        folderLabel.textContent = 'Save selected videos in: ';
+        var folderValue = document.createElement('strong');
+        folderValue.textContent = folderName;
+        folderRow.appendChild(folderLabel);
+        folderRow.appendChild(folderValue);
+        folderRow.appendChild(button('Edit folder name', 'action secondary small', function () {
+            var editedName = window.prompt('Playlist folder name', folderName);
+            if (editedName === null) { return; }
+            editedName = editedName.trim();
+            if (!editedName) { return; }
+            folderName = editedName;
+            folderValue.textContent = folderName;
+        }));
+        box.appendChild(folderRow);
 
         var boxes = [];
         function update() {
@@ -589,7 +623,7 @@
             try {
                 await api('/api/jobs/' + encodeURIComponent(id) + '/select', {
                     method: 'POST',
-                    body: JSON.stringify({ indexes: chosen })
+                    body: JSON.stringify({ indexes: chosen, folder_name: folderName })
                 });
                 removePicker(id);
             } catch (err) {
