@@ -9,6 +9,15 @@
     var videoInfoUrl = '';
     var videoDuration = 0;
     var playlistOptionsUnavailable = false;
+    var subtitleInfoUrl = '';
+    var subtitleLanguages = [];
+    var subtitleCheckRequest = 0;
+    var subtitleCheckInProgress = false;
+    var subtitleLanguageNames = {
+        en: 'English', es: 'Spanish', fr: 'French', de: 'German',
+        it: 'Italian', pt: 'Portuguese', ja: 'Japanese', ko: 'Korean',
+        'zh-Hans': 'Chinese (Simplified)', ar: 'Arabic', hi: 'Hindi', ru: 'Russian'
+    };
 
     function setMsg(text) {
         var m = el('msg');
@@ -25,10 +34,114 @@
     }
 
     function updateSubtitleToggle() {
-        var isAudio = el('quality').value === 'audio';
+        var host = '';
+        try {
+            host = new URL(el('url').value.trim()).hostname.toLowerCase();
+        } catch (err) {
+            host = '';
+        }
+        var supportsSubtitles = host === 'youtu.be' || host === 'youtube.com' || host.endsWith('.youtube.com');
+        var available = supportsSubtitles && el('quality').value !== 'audio' &&
+            subtitleInfoUrl === el('url').value.trim() && subtitleLanguages.length > 0;
         var checkbox = el('download-subtitles');
-        checkbox.disabled = isAudio;
-        if (isAudio) { checkbox.checked = false; }
+        el('subtitle-options').hidden = !available;
+        if (available) {
+            el('subtitle-check-status').hidden = true;
+        }
+        checkbox.disabled = !available;
+        if (!available) { checkbox.checked = false; }
+
+        if (available) {
+            var select = el('subtitle-language');
+            var previous = select.value;
+            select.replaceChildren();
+            subtitleLanguages.forEach(function (language) {
+                var option = document.createElement('option');
+                option.value = language.code;
+                option.textContent = language.name;
+                select.appendChild(option);
+            });
+            select.value = subtitleLanguages.some(function (language) { return language.code === previous; })
+                ? previous
+                : (subtitleLanguages.some(function (language) { return language.code === 'en'; })
+                    ? 'en'
+                    : subtitleLanguages[0].code);
+        }
+    }
+
+    function supportsSubtitleCheck() {
+        var host = '';
+        try {
+            host = new URL(el('url').value.trim()).hostname.toLowerCase();
+        } catch (err) {
+            return false;
+        }
+        return el('quality').value !== 'audio' &&
+            (host === 'youtu.be' || host === 'youtube.com' || host.endsWith('.youtube.com'));
+    }
+
+    function updateSubtitleCheckButton() {
+        var button = el('check-subtitles');
+        button.disabled = !supportsSubtitleCheck() || subtitleCheckInProgress;
+    }
+
+    function resetSubtitleAvailability() {
+        subtitleCheckRequest += 1;
+        subtitleCheckInProgress = false;
+        subtitleInfoUrl = '';
+        subtitleLanguages = [];
+        var status = el('subtitle-check-status');
+        status.textContent = '';
+        status.hidden = true;
+        updateSubtitleToggle();
+        updateSubtitleCheckButton();
+    }
+
+    async function checkSubtitleAvailability() {
+        var url = el('url').value.trim();
+        var requestId = ++subtitleCheckRequest;
+        subtitleInfoUrl = '';
+        subtitleLanguages = [];
+        updateSubtitleToggle();
+        updateSubtitleCheckButton();
+
+        var status = el('subtitle-check-status');
+        if (!supportsSubtitleCheck()) {
+            status.textContent = '';
+            status.hidden = true;
+            return;
+        }
+
+        status.textContent = 'Checking for downloadable subtitles...';
+        status.hidden = false;
+        subtitleCheckInProgress = true;
+        updateSubtitleCheckButton();
+        try {
+            var result = await api('/api/subtitle-info', {
+                method: 'POST',
+                body: JSON.stringify({ url: url })
+            });
+            if (requestId !== subtitleCheckRequest || url !== el('url').value.trim()) { return; }
+            subtitleInfoUrl = url;
+            subtitleLanguages = result.languages;
+            updateSubtitleToggle();
+            if (!subtitleLanguages.length) {
+                status.textContent = 'No downloadable subtitles found.';
+                status.hidden = false;
+            }
+        } catch (err) {
+            if (requestId === subtitleCheckRequest && url === el('url').value.trim()) {
+                subtitleInfoUrl = '';
+                subtitleLanguages = [];
+                status.textContent = 'Could not check subtitles: ' + err.message;
+                updateSubtitleToggle();
+            }
+        } finally {
+            if (requestId === subtitleCheckRequest) {
+                subtitleCheckInProgress = false;
+                updateSubtitleCheckButton();
+            }
+        }
     }
 
     function clearVideoInfo() {
@@ -175,6 +288,7 @@
             }
             el('url').value = clipboardText.trim();
             clearVideoInfo();
+            resetSubtitleAvailability();
             el('url').focus();
             setMsg('');
         } catch (err) {
@@ -248,7 +362,9 @@
             }
         }
         parts.push(platform);
-        if (showQualityAndSubtitles && job.download_subtitles) { parts.push('English subtitles'); }
+        if (showQualityAndSubtitles && job.download_subtitles) {
+            parts.push((subtitleLanguageNames[job.subtitle_language] || 'Selected language') + ' subtitles');
+        }
         return parts.join(' · ');
     }
 
@@ -382,20 +498,12 @@
             }
 
             if (job.status === 'done' && job.has_file) {
-                var open = document.createElement('a');
+                var open = document.createElement('button');
+                open.type = 'button';
                 open.className = 'action secondary small';
-                open.href = '/api/jobs/' + encodeURIComponent(job.id) + '/open';
-                open.target = '_blank';
-                open.rel = 'noopener';
                 open.textContent = 'Open';
+                open.addEventListener('click', function () { openJobFolder(job.id); });
                 actions.appendChild(open);
-
-                var move = document.createElement('button');
-                move.type = 'button';
-                move.className = 'action secondary small';
-                move.textContent = 'Move to';
-                move.addEventListener('click', function () { moveJobFile(job.id); });
-                actions.appendChild(move);
             }
 
             if (job.status !== 'processing') {
@@ -438,16 +546,13 @@
         }
     }
 
-    async function moveJobFile(id) {
+    async function openJobFolder(id) {
         try {
-            var result = await api('/api/jobs/' + encodeURIComponent(id) + '/move', {
+            await api('/api/jobs/' + encodeURIComponent(id) + '/open', {
                 method: 'POST',
                 body: '{}'
             });
-            if (!result.cancelled) {
-                setMsg('Moved "' + result.file_name + '" to the selected folder.');
-                refresh();
-            }
+            setMsg('');
         } catch (err) {
             setMsg(err.message);
         }
@@ -675,6 +780,7 @@
             url: url,
             quality: el('quality').value,
             download_subtitles: !!el('download-subtitles').checked,
+            subtitle_language: el('subtitle-language').value,
             custom_title: el('custom-title').value.trim()
         };
         if (videoInfoUrl === url && videoDuration) {
@@ -701,6 +807,7 @@
                 body: JSON.stringify(payload)
             });
             el('url').value = '';
+            resetSubtitleAvailability();
             el('custom-title').value = '';
             videoInfoUrl = '';
             videoDuration = 0;
@@ -718,8 +825,16 @@
     el('quality').addEventListener('change', function () {
         updateNote();
         updateSubtitleToggle();
+        updateSubtitleCheckButton();
+    });
+    el('url').addEventListener('input', function () {
+        resetSubtitleAvailability();
+    });
+    el('check-subtitles').addEventListener('click', function () {
+        checkSubtitleAvailability();
     });
     updateSubtitleToggle();
+    updateSubtitleCheckButton();
 
     el('select-time').addEventListener('click', async function () {
         var fields = el('time-range-fields');
@@ -748,16 +863,45 @@
 
     var optionsDialog = el('options-dialog');
     var settingsMsg = el('settings-msg');
+    var ytdlpUpdateStatus = el('ytdlp-update-status');
     el('open-options').addEventListener('click', async function () {
         settingsMsg.textContent = '';
         settingsMsg.hidden = true;
+        ytdlpUpdateStatus.textContent = '';
+        ytdlpUpdateStatus.hidden = true;
         try {
             var settings = await api('/api/settings');
             el('output-root-input').value = settings.output_root;
             el('max-concurrent-downloads').value = settings.max_concurrent_downloads;
+            var selectedLanguages = settings.subtitle_preflight_languages || ['en'];
+            document.querySelectorAll('[name="subtitle-preflight-language"]').forEach(function (checkbox) {
+                checkbox.checked = selectedLanguages.indexOf(checkbox.value) !== -1;
+            });
             optionsDialog.showModal();
         } catch (err) {
             setMsg(err.message);
+        }
+    });
+
+    el('update-ytdlp').addEventListener('click', async function () {
+        var update = el('update-ytdlp');
+        update.disabled = true;
+        update.textContent = 'Updating...';
+        ytdlpUpdateStatus.textContent = 'Updating yt-dlp. This may take a few minutes.';
+        ytdlpUpdateStatus.hidden = false;
+        settingsMsg.textContent = '';
+        settingsMsg.hidden = true;
+        try {
+            var result = await api('/api/settings/update-ytdlp', {
+                method: 'POST',
+                body: '{}'
+            });
+            ytdlpUpdateStatus.textContent = result.message;
+        } catch (err) {
+            ytdlpUpdateStatus.textContent = err.message;
+        } finally {
+            update.disabled = false;
+            update.textContent = 'Update yt-dlp';
         }
     });
 
@@ -799,11 +943,15 @@
         settingsMsg.textContent = '';
         settingsMsg.hidden = true;
         try {
+            var subtitleLanguages = Array.from(
+                document.querySelectorAll('[name="subtitle-preflight-language"]:checked')
+            ).map(function (checkbox) { return checkbox.value; });
             var settings = await api('/api/settings', {
                 method: 'POST',
                 body: JSON.stringify({
                     output_root: el('output-root-input').value,
-                    max_concurrent_downloads: Number(el('max-concurrent-downloads').value)
+                    max_concurrent_downloads: Number(el('max-concurrent-downloads').value),
+                    subtitle_preflight_languages: subtitleLanguages
                 })
             });
             el('output-root').textContent = settings.output_root;

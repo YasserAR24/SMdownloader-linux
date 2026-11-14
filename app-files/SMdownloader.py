@@ -24,8 +24,10 @@ import shutil
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 import uuid
+import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
 
 import yt_dlp
@@ -67,11 +69,50 @@ REQUIRED_FILES = [
 MAX_PLAYLIST_ITEMS = 200  # longer playlists are cut here (keeps the picker usable)
 MAX_CUSTOM_TITLE_LENGTH = 500
 DEFAULT_MAX_CONCURRENT_DOWNLOADS = 3
+MAX_SUBTITLE_PREFLIGHT_BYTES = 16 * 1024 * 1024
+SUBTITLE_LANGUAGES = {
+    "en": "English",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh-Hans": "Chinese (Simplified)",
+    "ar": "Arabic",
+    "hi": "Hindi",
+    "ru": "Russian",
+}
+SUBTITLE_PREFLIGHT_LANGUAGE_CHOICES = {
+    "en": "English",
+    "ar": "Arabic",
+    "fr": "French",
+}
+DEFAULT_SUBTITLE_PREFLIGHT_LANGUAGES = ["en"]
+WINDOWS_RESERVED_FILENAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *{f"COM{i}" for i in range(1, 10)},
+    *{f"LPT{i}" for i in range(1, 10)},
+}
 
-DEFAULT_OUTPUT_ROOT = os.environ.get("SM_DOWNLOAD_DIR") or os.path.join(
-    os.path.expanduser("~"), "Videos", "SMdownloads"
-)
-SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".config", "smdownloader", "settings.json")
+
+def default_config_dir():
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+        return os.path.join(appdata, "smdownloader")
+    return os.path.join(os.path.expanduser("~"), ".config", "smdownloader")
+
+
+def default_download_root():
+    env_root = os.environ.get("SM_DOWNLOAD_DIR")
+    if env_root and env_root.strip():
+        return os.path.abspath(os.path.expanduser(env_root.strip()))
+    return os.path.join(os.path.expanduser("~"), "Videos", "SMdownloads")
+
+
+DEFAULT_OUTPUT_ROOT = default_download_root()
+SETTINGS_FILE = os.path.join(default_config_dir(), "settings.json")
 
 
 def load_output_root():
@@ -96,8 +137,25 @@ def load_max_concurrent_downloads():
     return DEFAULT_MAX_CONCURRENT_DOWNLOADS
 
 
+def load_subtitle_preflight_languages():
+    try:
+        with open(SETTINGS_FILE, encoding="utf-8") as settings_file:
+            value = json.load(settings_file).get("subtitle_preflight_languages")
+        if isinstance(value, list):
+            languages = list(dict.fromkeys(
+                language for language in value
+                if isinstance(language, str) and language in SUBTITLE_PREFLIGHT_LANGUAGE_CHOICES
+            ))
+            if languages:
+                return languages
+    except (OSError, ValueError, AttributeError):
+        pass
+    return DEFAULT_SUBTITLE_PREFLIGHT_LANGUAGES.copy()
+
+
 OUTPUT_ROOT = load_output_root()
 MAX_CONCURRENT_DOWNLOADS = load_max_concurrent_downloads()
+SUBTITLE_PREFLIGHT_LANGUAGES = load_subtitle_preflight_languages()
 os.makedirs(OUTPUT_ROOT, exist_ok=True)
 
 CSRF_HEADER = "X-Requested-With"
@@ -119,6 +177,8 @@ scheduler_condition = threading.Condition(lock)
 work_queue = queue.Queue()
 inspect_slots = threading.BoundedSemaphore(4)
 FINISHED = ("done", "error", "cancelled")
+YTDLP_UPDATE_LOCK = threading.Lock()
+ytdlp_update_in_progress = False
 
 
 def public(job):
@@ -127,6 +187,7 @@ def public(job):
             "title", "percent", "size_done", "size_total", "speed", "eta", "error",
             "resume_requested", "download_subtitles", "custom_title", "download_range")
     data = {k: job[k] for k in keys}
+    data["subtitle_language"] = job["subtitle_language"]
     data["has_file"] = bool(job["file"])
     data["count"] = len(job["entries"]) if job["entries"] else None
     return data
@@ -139,8 +200,17 @@ def clean_error(exc, limit=500):
 def safe_custom_title(title):
     if not title:
         return None
+
+    title = str(title).strip()
+    title = "".join(ch if ch not in '<>:"/\\|?*' else "-" for ch in title)
     title = yt_dlp.utils.sanitize_filename(title, restricted=False).strip().rstrip(".")
     title = title.encode("utf-8")[:120].decode("utf-8", "ignore").strip(" .")
+    if not title:
+        return None
+    if os.name == "nt":
+        stem = os.path.splitext(title)[0].upper()
+        if stem in WINDOWS_RESERVED_FILENAMES:
+            title = f"_{title}"
     return title or None
 
 
@@ -166,6 +236,7 @@ def make_job(
     status,
     title=None,
     download_subtitles=False,
+    subtitle_language="en",
     custom_title=None,
     download_range=None,
     output_subfolder=None,
@@ -183,7 +254,10 @@ def make_job(
         "mode": mode,
         "quality": quality,
         "platform": platform,
-        "download_subtitles": bool(download_subtitles),
+        "download_subtitles": bool(
+            download_subtitles and mode == "video" and platform == "YouTube"
+        ),
+        "subtitle_language": subtitle_language,
         "custom_title": safe_custom_title(custom_title),
         "download_range": download_range,
         "output_root": OUTPUT_ROOT,
@@ -197,6 +271,7 @@ def make_job(
         "eta": None,
         "error": None,
         "file": None,
+        "subtitle_files": set(),
         "reserved_output_paths": set(),
         "cancel": False,
         "resume_event": threading.Event(),
@@ -235,8 +310,12 @@ def platform_check(url):
     return None
 
 
-def should_download_english_subtitles(job):
-    return job.get("download_subtitles") and job.get("platform") == "YouTube"
+def should_download_subtitles(job):
+    return (
+        job.get("download_subtitles")
+        and job.get("mode") == "video"
+        and job.get("platform") == "YouTube"
+    )
 
 
 def build_opts(job, on_progress, on_postprocess):
@@ -263,11 +342,13 @@ def build_opts(job, on_progress, on_postprocess):
         if job["mode"] == "video":
             ydl_opts["force_keyframes_at_cuts"] = True
 
-    if should_download_english_subtitles(job):
+    subtitle_language = job["subtitle_language"]
+    subtitle_pattern = f"{re.escape(subtitle_language)}.*"
+    if should_download_subtitles(job):
         ydl_opts.update({
             "writesubtitles": True,
             "writeautomaticsub": True,
-            "subtitleslangs": ["en.*"],
+            "subtitleslangs": [subtitle_pattern],
             "subtitlesformat": "best",
         })
 
@@ -292,10 +373,10 @@ def build_opts(job, on_progress, on_postprocess):
         else:
             ydl_opts["format"] = f"bestvideo[height<={q}]+bestaudio/best[height<={q}]/best"
 
-        if should_download_english_subtitles(job):
+        if should_download_subtitles(job):
             ydl_opts["writesubtitles"] = True
             ydl_opts["writeautomaticsub"] = True
-            ydl_opts["subtitleslangs"] = ["en.*"]
+            ydl_opts["subtitleslangs"] = [subtitle_pattern]
             ydl_opts["subtitlesformat"] = "srt/best"
             ydl_opts["postprocessors"].append({"key": "FFmpegEmbedSubtitle"})
 
@@ -415,15 +496,98 @@ def final_path(info):
     return info.get("filepath")
 
 
-def has_english_subtitles(info):
+def has_requested_subtitles(info, language):
     tracks = (info.get("subtitles") or {}, info.get("automatic_captions") or {})
+    pattern = re.compile(f"^{re.escape(language)}.*", re.IGNORECASE)
     return any(
-        language.lower().replace("_", "-") == "en"
-        or language.lower().replace("_", "-").startswith("en-")
+        pattern.match(track_language.replace("_", "-"))
         for collection in tracks
-        for language in collection
-        if isinstance(language, str)
+        for track_language in collection
+        if isinstance(track_language, str)
     )
+
+
+def can_download_subtitle(url, language_code):
+    with tempfile.TemporaryDirectory(prefix="smdownloader-subtitle-check-") as temp_dir:
+        options = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "skip_download": True,
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": [f"{re.escape(language_code)}.*"],
+            "subtitlesformat": "srt/best",
+            "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
+            "socket_timeout": 5,
+            "retries": 1,
+            "fragment_retries": 1,
+        }
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=True) or {}
+
+        for requested_language, downloaded in (info.get("requested_subtitles") or {}).items():
+            if not isinstance(requested_language, str) or not (
+                requested_language.lower() == language_code.lower()
+                or requested_language.lower().startswith(language_code.lower() + "-")
+                or requested_language.lower().startswith(language_code.lower() + "_")
+            ):
+                continue
+            if not isinstance(downloaded, dict):
+                continue
+            path = downloaded.get("filepath")
+            if not isinstance(path, str) or not os.path.isfile(path):
+                continue
+            try:
+                if os.path.getsize(path) > MAX_SUBTITLE_PREFLIGHT_BYTES:
+                    continue
+                with open(path, "rb") as subtitle_file:
+                    content = subtitle_file.read(MAX_SUBTITLE_PREFLIGHT_BYTES + 1)
+            except OSError:
+                continue
+            if subtitle_content_is_valid(downloaded.get("ext"), content):
+                return True
+        return False
+
+
+def subtitle_content_is_valid(extension, content):
+    if not content:
+        return False
+    text = content.decode("utf-8-sig", "replace").strip()
+    if extension == "json3":
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return False
+        return isinstance(data, dict) and any(
+            isinstance(event, dict)
+            and any(
+                isinstance(segment, dict) and bool(segment.get("utf8", "").strip())
+                for segment in event.get("segs", [])
+            )
+            for event in data.get("events", [])
+        )
+    if extension in ("srv1", "srv2", "srv3", "ttml", "dfxp"):
+        try:
+            root = ET.fromstring(text)
+        except ET.ParseError:
+            return False
+        root_name = root.tag.rsplit("}", 1)[-1].lower()
+        if root_name not in ("timedtext", "transcript", "tt"):
+            return False
+        return any(
+            node.tag.rsplit("}", 1)[-1].lower() in ("text", "p")
+            and any(value.strip() for value in node.itertext())
+            and any(key.rsplit("}", 1)[-1].lower() in ("start", "begin", "dur", "end") for key in node.attrib)
+            for node in root.iter()
+        )
+    if extension == "vtt":
+        return text.startswith("WEBVTT") and "-->" in text
+    if extension == "srt":
+        return "-->" in text and bool(re.search(r"\d{2}:\d{2}:\d{2}[,.]\d{3}", text))
+    if extension in ("ass", "ssa"):
+        return "[Events]" in text and "Dialogue:" in text
+    return False
 
 
 def reserve_output_path(job, info):
@@ -463,12 +627,7 @@ def rename_output_file(job, source, title):
             f'A file named "{os.path.basename(destination)}" already exists in the download folder.'
         )
 
-    os.link(source, destination)
-    try:
-        os.unlink(source)
-    except OSError:
-        os.unlink(destination)
-        raise
+    os.replace(source, destination)
     return destination
 
 
@@ -480,6 +639,42 @@ def remove_partials(paths):
                 os.remove(leftover)
             except OSError:
                 pass
+
+
+def record_subtitle_files(job, info):
+    if not isinstance(info, dict):
+        return
+    requested = info.get("requested_subtitles") or {}
+    if not isinstance(requested, dict):
+        return
+    root = os.path.realpath(job["output_root"])
+    for subtitle in requested.values():
+        path = subtitle.get("filepath") if isinstance(subtitle, dict) else None
+        if not isinstance(path, str):
+            continue
+        if not os.path.isabs(path):
+            path = os.path.join(job["output_dir"], path)
+        real_path = os.path.realpath(path)
+        try:
+            if os.path.commonpath([root, real_path]) == root:
+                job["subtitle_files"].add(real_path)
+        except ValueError:
+            continue
+
+
+def remove_job_subtitles(job):
+    for path in job.get("subtitle_files", set()):
+        for leftover in (path, path + ".part", path + ".ytdl"):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
+        for leftover in glob.glob(glob.escape(path) + ".part-Frag*"):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
+    job["subtitle_files"].clear()
 
 
 class ProgressTracker:
@@ -618,12 +813,15 @@ class SizePlannerPP(PostProcessor):
 
     def run(self, info):
         if (
-            should_download_english_subtitles(self.tracker.job)
+            should_download_subtitles(self.tracker.job)
             and self.tracker.job["mode"] == "video"
-            and not has_english_subtitles(info)
+            and not has_requested_subtitles(
+                info,
+                self.tracker.job["subtitle_language"],
+            )
         ):
             raise yt_dlp.utils.DownloadError(
-                "This video does not have English subtitles."
+                f"This video does not have {SUBTITLE_LANGUAGES[self.tracker.job['subtitle_language']]} subtitles."
             )
         reserve_output_path(self.tracker.job, info)
         self.tracker.plan(info)
@@ -637,12 +835,13 @@ def run_job(job):
     def on_progress(d):
         if d.get("tmpfilename"):
             partials.add(d["tmpfilename"])
+        info = d.get("info_dict") or {}
+        record_subtitle_files(job, info)
         while not job["resume_event"].wait(timeout=0.25):
             if job["cancel"]:
                 raise yt_dlp.utils.DownloadCancelled("Cancelled")
         if job["cancel"]:
             raise yt_dlp.utils.DownloadCancelled("Cancelled")
-        info = d.get("info_dict") or {}
         figures = tracker.update(d)
         with lock:
             if info.get("title"):
@@ -658,6 +857,7 @@ def run_job(job):
                             job["percent"] = max(job["percent"], figures["percent"])  # never moves backwards
 
     def on_postprocess(d):
+        record_subtitle_files(job, d.get("info_dict"))
         if d.get("status") == "started" and d.get("postprocessor") != "SizePlanner":
             tracker.stop_range_monitor()
             with lock:
@@ -671,6 +871,7 @@ def run_job(job):
         with yt_dlp.YoutubeDL(build_opts(job, on_progress, on_postprocess)) as ydl:
             ydl.add_post_processor(SizePlannerPP(tracker), when="before_dl")
             info = ydl.extract_info(job["url"], download=True)
+        record_subtitle_files(job, info)
         path = final_path(info)
         try:
             final_size = os.path.getsize(path) if path else None
@@ -690,6 +891,7 @@ def run_job(job):
             job["status"] = "done"
     except yt_dlp.utils.DownloadCancelled:
         remove_partials(partials)
+        remove_job_subtitles(job)
         with lock:
             job["status"] = "cancelled"
             job["speed"] = None
@@ -721,6 +923,10 @@ def run_scheduled_job(job):
 def worker():
     while True:
         with scheduler_condition:
+            if ytdlp_update_in_progress:
+                scheduler_condition.wait()
+                continue
+
             active = sum(job["status"] == "downloading" for job in jobs.values())
             if active >= MAX_CONCURRENT_DOWNLOADS:
                 scheduler_condition.wait()
@@ -797,6 +1003,8 @@ def index():
         output_root=OUTPUT_ROOT,
         max_concurrent_downloads=MAX_CONCURRENT_DOWNLOADS,
         quality_options=QUALITY_OPTIONS,
+        subtitle_languages=SUBTITLE_LANGUAGES,
+        subtitle_preflight_languages=SUBTITLE_PREFLIGHT_LANGUAGE_CHOICES,
         default_quality=DEFAULT_QUALITY,
     ))
     response.headers["Cache-Control"] = "no-store"
@@ -818,11 +1026,15 @@ def video_info():
     if len(url) > MAX_URL_LENGTH:
         return error("URL is too long.", 400)
 
+    if not YTDLP_UPDATE_LOCK.acquire(blocking=False):
+        return error("Wait for the yt-dlp update to finish, then try again.", 409)
     try:
         with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "noplaylist": True}) as ydl:
             info = ydl.extract_info(url, download=False) or {}
     except Exception as exc:
         return error(clean_error(exc), 400)
+    finally:
+        YTDLP_UPDATE_LOCK.release()
 
     if info.get("_type") == "playlist":
         return error("Select a single video URL to choose a time range.", 400)
@@ -832,18 +1044,55 @@ def video_info():
     return jsonify({"duration": int(duration), "title": str(info.get("title") or "")[:300]})
 
 
+@app.post("/api/subtitle-info")
+def subtitle_info():
+    data = request.get_json(silent=True)
+    url = str(data.get("url") or "").strip() if isinstance(data, dict) else ""
+    if not url.startswith(("http://", "https://")) or not urlparse(url).hostname:
+        return error("Not a valid URL (must start with http:// or https://).", 400)
+    if len(url) > MAX_URL_LENGTH:
+        return error("URL is too long.", 400)
+    if platform_check(url) != "YouTube":
+        return jsonify({"languages": []})
+
+    with lock:
+        languages_to_check = list(SUBTITLE_PREFLIGHT_LANGUAGES)
+    if not YTDLP_UPDATE_LOCK.acquire(blocking=False):
+        return error("Wait for the yt-dlp update to finish, then try again.", 409)
+    try:
+        available = []
+        for language in languages_to_check:
+            try:
+                if can_download_subtitle(url, language):
+                    available.append({
+                        "code": language,
+                        "name": SUBTITLE_LANGUAGES[language],
+                    })
+            except Exception as exc:
+                app.logger.info(
+                    "%s subtitle preflight failed: %s",
+                    SUBTITLE_LANGUAGES[language],
+                    clean_error(exc),
+                )
+    finally:
+        YTDLP_UPDATE_LOCK.release()
+
+    return jsonify({"languages": available})
+
+
 @app.get("/api/settings")
 def get_settings():
     with lock:
         return jsonify({
             "output_root": OUTPUT_ROOT,
             "max_concurrent_downloads": MAX_CONCURRENT_DOWNLOADS,
+            "subtitle_preflight_languages": SUBTITLE_PREFLIGHT_LANGUAGES,
         })
 
 
 @app.post("/api/settings")
 def update_settings():
-    global OUTPUT_ROOT, MAX_CONCURRENT_DOWNLOADS
+    global OUTPUT_ROOT, MAX_CONCURRENT_DOWNLOADS, SUBTITLE_PREFLIGHT_LANGUAGES
     data = request.get_json(silent=True)
     path = data.get("output_root") if isinstance(data, dict) else None
     if not isinstance(path, str) or not path.strip():
@@ -851,6 +1100,20 @@ def update_settings():
     max_concurrent = data.get("max_concurrent_downloads", MAX_CONCURRENT_DOWNLOADS)
     if isinstance(max_concurrent, bool) or not isinstance(max_concurrent, int) or max_concurrent < 1:
         return error("Maximum simultaneous downloads must be a positive whole number.", 400)
+    subtitle_languages = data.get(
+        "subtitle_preflight_languages",
+        SUBTITLE_PREFLIGHT_LANGUAGES,
+    )
+    if (
+        not isinstance(subtitle_languages, list)
+        or not subtitle_languages
+        or any(
+            not isinstance(language, str) or language not in SUBTITLE_PREFLIGHT_LANGUAGE_CHOICES
+            for language in subtitle_languages
+        )
+    ):
+        return error("Select at least one supported subtitle language.", 400)
+    subtitle_languages = list(dict.fromkeys(subtitle_languages))
 
     path = os.path.abspath(os.path.expanduser(path.strip()))
     try:
@@ -863,6 +1126,7 @@ def update_settings():
             json.dump({
                 "output_root": path,
                 "max_concurrent_downloads": max_concurrent,
+                "subtitle_preflight_languages": subtitle_languages,
             }, settings_file)
         os.replace(temporary, SETTINGS_FILE)
     except OSError as exc:
@@ -871,11 +1135,59 @@ def update_settings():
     with scheduler_condition:
         OUTPUT_ROOT = path
         MAX_CONCURRENT_DOWNLOADS = max_concurrent
+        SUBTITLE_PREFLIGHT_LANGUAGES = subtitle_languages
         scheduler_condition.notify_all()
         return jsonify({
             "output_root": OUTPUT_ROOT,
             "max_concurrent_downloads": MAX_CONCURRENT_DOWNLOADS,
+            "subtitle_preflight_languages": SUBTITLE_PREFLIGHT_LANGUAGES,
         })
+
+
+def pick_directory(title, initial_dir):
+    initial_dir = os.path.abspath(os.path.expanduser(initial_dir or "."))
+    if sys.platform.startswith("win"):
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            try:
+                chosen = filedialog.askdirectory(
+                    title=title,
+                    initialdir=initial_dir,
+                    mustexist=True,
+                )
+            finally:
+                root.destroy()
+            return chosen or None
+        except Exception:
+            pass
+
+    zenity = shutil.which("zenity")
+    kdialog = shutil.which("kdialog")
+    if zenity:
+        command = [
+            zenity,
+            "--file-selection",
+            "--directory",
+            f"--title={title}",
+            f"--filename={initial_dir.rstrip(os.sep)}{os.sep}",
+        ]
+    elif kdialog:
+        command = [kdialog, "--getexistingdirectory", initial_dir, "--title", title]
+    else:
+        return None
+
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    if result.returncode not in (0, 1):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
 
 
 @app.post("/api/settings/browse")
@@ -883,100 +1195,64 @@ def browse_settings():
     with lock:
         initial_dir = OUTPUT_ROOT
 
-    zenity = shutil.which("zenity")
-    kdialog = shutil.which("kdialog")
-    if zenity:
-        command = [
-            zenity,
-            "--file-selection",
-            "--directory",
-            "--title=Choose download folder",
-            f"--filename={initial_dir.rstrip(os.sep)}{os.sep}",
-        ]
-    elif kdialog:
-        command = [kdialog, "--getexistingdirectory", initial_dir, "--title", "Choose download folder"]
-    else:
+    destination = pick_directory("Choose download folder", initial_dir)
+    if destination is None:
         return error("No system folder picker is available. You can still enter the path manually.", 503)
+    return jsonify({"output_root": destination})
+
+
+@app.post("/api/settings/update-ytdlp")
+def update_ytdlp():
+    global ytdlp_update_in_progress
+    if not YTDLP_UPDATE_LOCK.acquire(blocking=False):
+        return error("A yt-dlp update is already in progress.", 409)
 
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-    except OSError as exc:
-        return error(f"Could not open the folder picker: {clean_error(exc)}", 500)
-    if result.returncode not in (0, 1):
-        return error(clean_error(result.stderr) or "The folder picker could not be opened.", 500)
-    return jsonify({"output_root": result.stdout.strip() if result.returncode == 0 else ""})
-
-
-@app.post("/api/jobs/<job_id>/move")
-def move_job_file(job_id):
-    with lock:
-        job = jobs.get(job_id)
-        if job is None:
-            return error("No such job.", 404)
-        if job["status"] != "done" or not job["file"]:
-            return error("Only completed downloads can be moved.", 409)
-        source = os.path.realpath(job["file"])
-
-    if not os.path.isfile(source):
-        return error("The downloaded file is no longer available.", 404)
-
-    initial_dir = os.path.dirname(source)
-    zenity = shutil.which("zenity")
-    kdialog = shutil.which("kdialog")
-    if zenity:
-        command = [
-            zenity,
-            "--file-selection",
-            "--directory",
-            "--title=Move video to folder",
-            f"--filename={initial_dir.rstrip(os.sep)}{os.sep}",
-        ]
-    elif kdialog:
-        command = [
-            kdialog,
-            "--getexistingdirectory",
-            initial_dir,
-            "--title",
-            "Move video to folder",
-        ]
-    else:
-        return error("No system folder picker is available.", 503)
-
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-    except OSError as exc:
-        return error(f"Could not open the folder picker: {clean_error(exc)}", 500)
-    if result.returncode in (1,):
-        return jsonify({"cancelled": True})
-    if result.returncode != 0:
-        return error(clean_error(result.stderr) or "The folder picker could not be opened.", 500)
-
-    destination_dir = os.path.realpath(os.path.expanduser(result.stdout.strip()))
-    if not os.path.isdir(destination_dir) or not os.access(destination_dir, os.W_OK):
-        return error("The selected folder is not writable.", 400)
-    destination = os.path.join(destination_dir, os.path.basename(source))
-
-    with lock:
-        job = jobs.get(job_id)
-        if job is None or job["status"] != "done" or job["file"] != source:
-            return error("The downloaded file changed while choosing a folder.", 409)
-        if os.path.lexists(destination):
-            return error(
-                f'A file named "{os.path.basename(destination)}" already exists in the selected folder.',
-                409,
+        with scheduler_condition:
+            active = any(
+                job["status"] not in FINISHED
+                for job in jobs.values()
             )
+            if active:
+                return error("Wait for all queued and active jobs to finish before updating yt-dlp.", 409)
+            ytdlp_update_in_progress = True
+
         try:
-            moved_path = shutil.move(source, destination)
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=600,
+            )
+        except subprocess.TimeoutExpired:
+            return error("The yt-dlp update timed out. Check your connection and try again.", 504)
         except OSError as exc:
-            return error(f"Could not move the downloaded file: {clean_error(exc)}", 500)
-        job["file"] = os.path.realpath(moved_path)
-        job["output_root"] = destination_dir
-        job["output_dir"] = destination_dir
-        return jsonify({"file_name": os.path.basename(moved_path)})
+            return error(f"Could not run pip: {clean_error(exc)}", 500)
+
+        if result.returncode:
+            details = clean_error(result.stderr or result.stdout)
+            message = "Could not update yt-dlp."
+            if details:
+                message += " " + details
+            return error(message, 500)
+
+        return jsonify({
+            "message": "yt-dlp updated. Restart SMdownloader to load the updated version."
+        })
+    finally:
+        with scheduler_condition:
+            ytdlp_update_in_progress = False
+            scheduler_condition.notify_all()
+        YTDLP_UPDATE_LOCK.release()
 
 
 @app.post("/api/jobs")
 def create_job():
+    with lock:
+        if ytdlp_update_in_progress:
+            return error("Wait for the yt-dlp update to finish, then try again.", 409)
+
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return error("Send a JSON body.", 400)
@@ -994,6 +1270,9 @@ def create_job():
     download_subtitles = data.get("download_subtitles", False) if isinstance(data, dict) else False
     if not isinstance(download_subtitles, bool):
         return error("The subtitles option must be true or false.", 400)
+    subtitle_language = data.get("subtitle_language", "en")
+    if not isinstance(subtitle_language, str) or subtitle_language not in SUBTITLE_LANGUAGES:
+        return error("Choose a supported subtitle language.", 400)
     custom_title = data.get("custom_title", "")
     if not isinstance(custom_title, str):
         return error("The custom title must be text.", 400)
@@ -1020,11 +1299,14 @@ def create_job():
         download_range = (start_seconds, end_seconds)
 
     with lock:
+        if ytdlp_update_in_progress:
+            return error("Wait for the yt-dlp update to finish, then try again.", 409)
         job = make_job(
             url,
             quality,
             "inspecting",
             download_subtitles=download_subtitles,
+            subtitle_language=subtitle_language,
             custom_title=custom_title,
             download_range=download_range,
         )
@@ -1052,6 +1334,10 @@ def job_entries(job_id):
 
 @app.post("/api/jobs/<job_id>/select")
 def select_entries(job_id):
+    with lock:
+        if ytdlp_update_in_progress:
+            return error("Wait for the yt-dlp update to finish, then try again.", 409)
+
     data = request.get_json(silent=True)
     indexes = data.get("indexes") if isinstance(data, dict) else None
     if not isinstance(indexes, list) or not indexes:
@@ -1086,6 +1372,7 @@ def select_entries(job_id):
                 "queued",
                 job["entries"][i - 1]["title"],
                 download_subtitles=job.get("download_subtitles", False),
+                subtitle_language=job.get("subtitle_language", "en"),
                 output_subfolder=folder_name,
             )
             for i in sorted(chosen)
@@ -1113,6 +1400,7 @@ def delete_job(job_id):
         else:
             # queued / inspecting / choosing / finished: just drop it. The worker and the
             # inspector both skip ids they can't find.
+            remove_job_subtitles(job)
             del jobs[job_id]
     return jsonify({"ok": True})
 
@@ -1196,6 +1484,8 @@ def edit_job_name(job_id):
 @app.post("/api/jobs/<job_id>/retry")
 def retry_job(job_id):
     with lock:
+        if ytdlp_update_in_progress:
+            return error("Wait for the yt-dlp update to finish, then try again.", 409)
         job = jobs.get(job_id)
         if job is None:
             return error("No such job.", 404)
@@ -1226,6 +1516,8 @@ def retry_job(job_id):
 @app.post("/api/jobs/<job_id>/skip-subtitles")
 def skip_subtitles_job(job_id):
     with lock:
+        if ytdlp_update_in_progress:
+            return error("Wait for the yt-dlp update to finish, then try again.", 409)
         job = jobs.get(job_id)
         if job is None:
             return error("No such job.", 404)
@@ -1260,6 +1552,7 @@ def skip_subtitles_job(job_id):
 def clear_jobs():
     with lock:
         for job_id in [i for i, j in jobs.items() if j["status"] in FINISHED]:
+            remove_job_subtitles(jobs[job_id])
             del jobs[job_id]
     return jsonify({"ok": True})
 
@@ -1283,14 +1576,15 @@ def job_file(job_id):
     return send_file(real, as_attachment=True)
 
 
-@app.get("/api/jobs/<job_id>/open")
-def open_job_file(job_id):
+@app.post("/api/jobs/<job_id>/open")
+def open_job_folder(job_id):
     with lock:
         job = jobs.get(job_id)
         path = job["file"] if job else None
         output_root = job["output_root"] if job else None
     if not path or not os.path.isfile(path):
         abort(404)
+
     root = os.path.realpath(output_root)
     real = os.path.realpath(path)
     try:
@@ -1299,7 +1593,26 @@ def open_job_file(job_id):
         inside = False
     if not inside:
         abort(403)
-    return send_file(real, as_attachment=False)
+
+    folder = os.path.dirname(real)
+    if sys.platform.startswith("win"):
+        command = ["explorer", folder]
+    else:
+        opener = shutil.which("xdg-open") or shutil.which("gio")
+        if not opener:
+            return error("No system folder opener is available.", 503)
+        command = [opener, "open", folder] if os.path.basename(opener) == "gio" else [opener, folder]
+
+    try:
+        subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        return error(f"Could not open the download folder: {clean_error(exc)}", 500)
+    return jsonify({"opened": True})
 
 
 # ----------------------------------------------------------------------------
