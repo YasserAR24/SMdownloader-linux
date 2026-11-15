@@ -34,14 +34,14 @@ Social Media downloader
 
 You can update the program by running the `install-config-update.sh` file again.
 
-## Technical stuf
+## Technical stuff
 
  - **HTML, CSS, and JavaScript:** front end.
  - **python**: back end
-	 - **yt-dlp:** handles the downloading
+	 - **yt-dlp:** handles the downloading.
 	 - **Flask:** the web server.
 - **FFmpeg:** processes the downloaded files. It merges separate video and audio streams into one MP4, converts audio to MP3, and embeds subtitles into the video.
 
-- **Local Host** : for hosting the server
+- **Local Host port 5000** : for hosting the server localy.
 
 

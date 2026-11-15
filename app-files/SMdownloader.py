@@ -1080,6 +1080,122 @@ def subtitle_info():
     return jsonify({"languages": available})
 
 
+@app.post("/api/playlist-entries")
+def playlist_subtitle_entries():
+    data = request.get_json(silent=True)
+    url = str(data.get("url") or "").strip() if isinstance(data, dict) else ""
+    if not url.startswith(("http://", "https://")) or not urlparse(url).hostname:
+        return error("Not a valid URL (must start with http:// or https://).", 400)
+    if len(url) > MAX_URL_LENGTH:
+        return error("URL is too long.", 400)
+    if platform_check(url) != "YouTube":
+        return jsonify({"is_playlist": False})
+
+    if not YTDLP_UPDATE_LOCK.acquire(blocking=False):
+        return error("Wait for the yt-dlp update to finish, then try again.", 409)
+    try:
+        options = {
+            "quiet": True,
+            "no_warnings": True,
+            "noprogress": True,
+            "extract_flat": "in_playlist",
+            "playlistend": MAX_PLAYLIST_ITEMS + 1,
+        }
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=False) or {}
+    except Exception as exc:
+        return error(clean_error(exc), 400)
+    finally:
+        YTDLP_UPDATE_LOCK.release()
+
+    if info.get("_type") != "playlist":
+        return jsonify({"is_playlist": False})
+
+    entries, truncated = collect_entries(info)
+    return jsonify({
+        "is_playlist": True,
+        "title": str(info.get("title") or "")[:300] or "Playlist",
+        "truncated": truncated,
+        "limit": MAX_PLAYLIST_ITEMS,
+        "entries": [
+            {
+                "n": index,
+                "title": entry["title"],
+                "url": entry["url"],
+                "duration": entry["duration"],
+            }
+            for index, entry in enumerate(entries, start=1)
+        ],
+    })
+
+
+@app.post("/api/playlist-subtitle-download")
+def download_playlist_subtitle_selection():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return error("Send a JSON body.", 400)
+
+    videos = data.get("videos")
+    if not isinstance(videos, list) or not videos:
+        return error("Select at least one video.", 400)
+    if len(videos) > MAX_PLAYLIST_ITEMS:
+        return error(f"Select no more than {MAX_PLAYLIST_ITEMS} videos.", 400)
+
+    quality = str(data.get("quality") or DEFAULT_QUALITY)
+    if quality not in QUALITY_CHOICES:
+        return error("Invalid quality. Use: " + ", ".join(QUALITY_CHOICES) + ".", 400)
+    if quality == "audio":
+        return error("Subtitles are unavailable for audio-only downloads.", 400)
+    subtitle_language = data.get("subtitle_language", "en")
+    if not isinstance(subtitle_language, str) or subtitle_language not in SUBTITLE_LANGUAGES:
+        return error("Choose a supported subtitle language.", 400)
+    folder_name = data.get("folder_name")
+    if not isinstance(folder_name, str):
+        return error("The playlist folder name must be text.", 400)
+    folder_name = safe_custom_title(folder_name)
+    if not folder_name:
+        return error("Enter a valid playlist folder name.", 400)
+
+    normalized_videos = []
+    for video in videos:
+        if not isinstance(video, dict):
+            return error("Invalid video selection.", 400)
+        url = video.get("url")
+        title = video.get("title")
+        if (
+            not isinstance(url, str)
+            or not url.startswith(("http://", "https://"))
+            or not urlparse(url).hostname
+            or len(url) > MAX_URL_LENGTH
+            or platform_check(url) != "YouTube"
+        ):
+            return error("Invalid video selection.", 400)
+        if not isinstance(title, str):
+            return error("Invalid video title.", 400)
+        normalized_videos.append((url, title[:300]))
+
+    with lock:
+        if ytdlp_update_in_progress:
+            return error("Wait for the yt-dlp update to finish, then try again.", 409)
+        children = [
+            make_job(
+                url,
+                quality,
+                "queued",
+                title,
+                download_subtitles=True,
+                subtitle_language=subtitle_language,
+                output_subfolder=folder_name,
+            )
+            for url, title in normalized_videos
+        ]
+    for child in children:
+        work_queue.put(child["id"])
+    with scheduler_condition:
+        scheduler_condition.notify_all()
+    return jsonify({"queued": len(children)})
+
+
 @app.get("/api/settings")
 def get_settings():
     with lock:
@@ -1279,7 +1395,6 @@ def create_job():
     custom_title = custom_title.strip()
     if len(custom_title) > MAX_CUSTOM_TITLE_LENGTH:
         return error(f"The custom title must be {MAX_CUSTOM_TITLE_LENGTH} characters or fewer.", 400)
-
     start_text = data.get("start_time", "")
     end_text = data.get("end_time", "")
     if not isinstance(start_text, str) or not isinstance(end_text, str):
