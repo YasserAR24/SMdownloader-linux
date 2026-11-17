@@ -1216,12 +1216,9 @@
 
     var optionsDialog = el('options-dialog');
     var settingsMsg = el('settings-msg');
-    var ytdlpUpdateStatus = el('ytdlp-update-status');
     el('open-options').addEventListener('click', async function () {
         settingsMsg.textContent = '';
         settingsMsg.hidden = true;
-        ytdlpUpdateStatus.textContent = '';
-        ytdlpUpdateStatus.hidden = true;
         try {
             var settings = await api('/api/settings');
             el('output-root-input').value = settings.output_root;
@@ -1233,28 +1230,6 @@
             optionsDialog.showModal();
         } catch (err) {
             setMsg(err.message);
-        }
-    });
-
-    el('update-ytdlp').addEventListener('click', async function () {
-        var update = el('update-ytdlp');
-        update.disabled = true;
-        update.textContent = 'Updating...';
-        ytdlpUpdateStatus.textContent = 'Updating yt-dlp. This may take a few minutes.';
-        ytdlpUpdateStatus.hidden = false;
-        settingsMsg.textContent = '';
-        settingsMsg.hidden = true;
-        try {
-            var result = await api('/api/settings/update-ytdlp', {
-                method: 'POST',
-                body: '{}'
-            });
-            ytdlpUpdateStatus.textContent = result.message;
-        } catch (err) {
-            ytdlpUpdateStatus.textContent = err.message;
-        } finally {
-            update.disabled = false;
-            update.textContent = 'Update yt-dlp';
         }
     });
 
