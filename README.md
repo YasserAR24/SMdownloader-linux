@@ -1,47 +1,52 @@
 # SMdownloader
 
-Social Media downloader
+Download videos and audio from YouTube, Instagram, Facebook, TikTok, LinkedIn and other sites supported by yt-dlp. It runs on your computer and opens in your browser.
 
-## Make this for first time (one time)
+## Installation (first time only)
 
-- First, make `install-config-update.sh` and `runSMdownloader.sh` executable by typing this command in a terminal (note: you must open the current folder in the terminal):  
+1. First, make `install-config-update.sh` and `runSMdownloader.sh` executable by typing this command in a terminal (note: you must open the current folder in the terminal):
   `chmod +x install-config-update.sh runSMdownloader.sh`
-- Right click `install-config-update.sh` and **Run as a Program** 
+2. Right click `install-config-update.sh` and **Run as a Program** 
 	- Type your password
 	- Wait until you see “Press Enter to exit...”, then press Enter to close the window.
 
-## How to run and use it
+## Running
 
-- Right-click `runSMdownloader.sh` and choose **Run as a Program**.
-- A window will open in your default browser. This window contains the app’s GUI.
+- Right-click `runSMdownloader.sh` and choose **Run as a Program**, Your browser opens the app. If it doesn't, go to http://127.0.0.1:5000.
+To stop, close the terminal window.
+
+## Updating
+
+Run `config.bat` again. Do this whenever downloads stop working, because yt-dlp needs frequent updates.
+
+## Troubleshooting
+
+- **"Python/FFmpeg is not installed":** close and reopen the window after installing. If it still fails, sign out and back in.
+- **YouTube fails or shows few qualities:** make sure Deno is installed, then run `config.bat` again.
+- **Port 5000 in use:** the app is already running, or another program uses that port.
 
 ## Features
 
-- Download a single video or pick videos from a playlist (first 200 items are listed)
-- Quality options:
-	- Youtube: High (best available), 2160p (4K), 1440p (2K), 1080p, 720p, 480p, 360p, or Audio only (MP3, 192 kbps)
-	- Other Platforms: Hight (best available), Audio only (MP3, 192 kbps)
+- Download a single video or pick videos from a playlist.
+- Quality
+    - YouTube: High (best available), 2160p, 1440p, 1080p, 720p, 480p, 360p, or audio only (MP3, 192 kbps)
+    - Other platforms: only High and audio.
 - Video output is always MP4
-- Clip a section of a video with a timeline slider or manual start/end times
+- Clip a section with a timeline slider or manual start/end times
 - Optional custom file name; playlist downloads can use a custom folder name
-- English subtitles (YouTube only), embedded into the MP4
-- Queue with live progress, speed, ETA, pause/resume, cancel, retry, and "retry without subtitles"
-- Open or move finished files from the page
+- Subtitles (YouTube only), embedded into the MP4
+- Queue with live progress, speed, ETA, pause/resume, cancel and retry
 - Configurable download folder and maximum simultaneous downloads (default 3)
-- Downloads are sorted into subfolders by platform: YouTube, Instagram, Facebook, TikTok, LinkedIn. Other sites supported by yt-dlp are saved in the root download folder.
+- Files are sorted into subfolders by platform (YouTube, Instagram, Facebook, TikTok, LinkedIn). Other sites go in the root download folder.
+    - **the root folder:  Videos\SMdownloads**
 
-## Note
+## How it works
 
-You can update the program by running the `install-config-update.sh` file again.
+- Front end: HTML, CSS, JavaScript
+- Back end: Python with Flask (web server) and yt-dlp (downloads)
+- FFmpeg merges video and audio, converts to MP3 and embeds subtitles
+- The app listens only on 127.0.0.1, port 5000
 
-## Technical stuff
+## Legal
 
- - **HTML, CSS, and JavaScript:** front end.
- - **python**: back end
-	 - **yt-dlp:** handles the downloading.
-	 - **Flask:** the web server.
-- **FFmpeg:** processes the downloaded files. It merges separate video and audio streams into one MP4, converts audio to MP3, and embeds subtitles into the video.
-
-- **Local Host port 5000** : for hosting the server localy.
-
-
+Download only content you own or have permission to download.
