@@ -1,29 +1,26 @@
 # SMdownloader
 
-Download videos and audio from YouTube, Instagram, Facebook, TikTok, LinkedIn and other sites supported by yt-dlp. It runs on your computer and opens in your browser.
+**Social Media Downloader**, Download videos and audio from YouTube, Instagram, Facebook, TikTok, LinkedIn and other sites supported by yt-dlp. It runs on your computer and opens in your browser.
 
 ## Installation (first time only)
 
-1. First, make `install-config-update.sh` and `runSMdownloader.sh` executable by typing this command in a terminal (note: you must open the current folder in the terminal):
-  `chmod +x install-config-update.sh runSMdownloader.sh`
-2. Right click `install-config-update.sh` and **Run as a Program** 
+1. First, make install-requirements.sh, config.sh and runSMdownloader.sh files executable by typing this command in a terminal (note: you must open the current folder in the terminal):
+  `chmod +x install-requirements.sh config.sh runSMdownloader.sh`
+2. Right click `install-requirements.sh` file and **Run as a Program** 
 	- Type your password
 	- Wait until you see “Press Enter to exit...”, then press Enter to close the window.
+3. make the same thing to `config.sh` file
+
 
 ## Running
 
-- Right-click `runSMdownloader.sh` and choose **Run as a Program**, Your browser opens the app. If it doesn't, go to http://127.0.0.1:5000.
+- Right-click `runSMdownloader.sh` file and choose **Run as a Program**, Your browser opens the app. If it doesn't, go to http://127.0.0.1:5000.
 To stop, close the terminal window.
 
 ## Updating
 
-Run `config.bat` again. Do this whenever downloads stop working, because yt-dlp needs frequent updates.
+Run .sh files again. (install-requirements.sh and config.sh)
 
-## Troubleshooting
-
-- **"Python/FFmpeg is not installed":** close and reopen the window after installing. If it still fails, sign out and back in.
-- **YouTube fails or shows few qualities:** make sure Deno is installed, then run `config.bat` again.
-- **Port 5000 in use:** the app is already running, or another program uses that port.
 
 ## Features
 
@@ -39,6 +36,10 @@ Run `config.bat` again. Do this whenever downloads stop working, because yt-dlp 
 - Configurable download folder and maximum simultaneous downloads (default 3)
 - Files are sorted into subfolders by platform (YouTube, Instagram, Facebook, TikTok, LinkedIn). Other sites go in the root download folder.
     - **the root folder:  Videos\SMdownloads**
+
+## Troubleshooting
+
+- **Port 5000 in use:** the app is already running, or another program uses that port.
 
 ## How it works
 

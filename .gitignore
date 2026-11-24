@@ -1,2 +1,3 @@
 app-files/__pycache__/
 .SMdownloadervenv
+.gitignore
