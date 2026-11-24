@@ -5,7 +5,7 @@
 ## Installation (first time only)
 
 1. First, make install-requirements.sh, config.sh and runSMdownloader.sh files executable by typing this command in a terminal (note: you must open the current folder in the terminal):
-  `chmod +x install-requirements.sh config.sh runSMdownloader.sh`
+- `chmod +x install-requirements.sh config.sh runSMdownloader.sh`
 2. Right click `install-requirements.sh` file and **Run as a Program** 
 	- Type your password
 	- Wait until you see “Press Enter to exit...”, then press Enter to close the window.
@@ -39,6 +39,8 @@ Run .sh files again. (install-requirements.sh and config.sh)
 
 ## Troubleshooting
 
+- **Python/FFmpeg is not found:** try to open `install-requirements.sh` file again; if they are still not found try to install them manually.
+- **Downloading fails** make sure Deno is installed, then run `config.sh` again.
 - **Port 5000 in use:** the app is already running, or another program uses that port.
 
 ## How it works
